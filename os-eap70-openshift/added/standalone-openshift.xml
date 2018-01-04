@@ -92,7 +92,7 @@
                 </formatter>
             </console-handler>
             <logger category="com.arjuna">
-                <level name="WARN"/>
+                <level name="TRACE"/>
             </logger>
             <logger category="org.jboss.as.config">
                 <level name="DEBUG"/>

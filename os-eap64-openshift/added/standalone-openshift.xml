@@ -88,7 +88,7 @@
                 </formatter>
             </console-handler>
             <logger category="com.arjuna">
-                <level name="WARN"/>
+                <level name="TRACE"/>
             </logger>
             <logger category="org.apache.tomcat.util.modeler">
                 <level name="WARN"/>

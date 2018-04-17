@@ -5,7 +5,7 @@ description: EAP common migration scripts
 
 modules:
   install:
-  - name: os-partition
+  - name: os-eap-txn-partition
 
 envs:
   - name: "RECOVERY_TIMEOUT"

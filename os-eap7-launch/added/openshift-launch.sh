@@ -15,7 +15,8 @@ function runServer() {
   local instanceDir=$1
   local count=$2
 
-  export NODE_NAME="${NODE_NAME:-node}-${count}"
+  local countedNodeName="node-${count}"
+  export NODE_NAME="${NODE_NAME:-$countedNodeName}"
 
   source $JBOSS_HOME/bin/launch/configure.sh
 

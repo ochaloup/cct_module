@@ -1,0 +1,8 @@
+schema_version: 1
+name: os-eap-txn-partition
+version: '1.0'
+description: Lock-free transaction recovery algorithm
+execute:
+- script: configure.sh
+  user: '185'
+- script: install_as_root.sh

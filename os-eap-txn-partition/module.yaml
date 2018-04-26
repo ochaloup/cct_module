@@ -2,6 +2,13 @@ schema_version: 1
 name: os-eap-txn-partition
 version: '1.0'
 description: Lock-free transaction recovery algorithm
+
+envs:
+  - name: "CONFIG_MAP_MARKER_NAME"
+    value: "txn-recovery-marker"
+    example: "txn-recovery-marker"
+    description: "Name of config map where recovery marker will be stored at."
+
 execute:
 - script: configure.sh
   user: '185'

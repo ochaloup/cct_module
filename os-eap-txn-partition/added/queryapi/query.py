@@ -26,12 +26,18 @@ class QueryType(Enum):
     """
     Represents what could be queried.
     PODS: list of pods
+    PODS_LIVING: list of living pods
     LOG: log from particular pod
+    CM_KEYS: list of config map keys
+    CM_STORE: store value as part of the config map
     """
 
     PODS = 'pods'
     PODS_LIVING = 'pods_living'
     LOG = 'log'
+    CM_KEYS = 'cm_keys'
+    CM_STORE = 'cm_store'
+    CM_REMOVE = 'cm_remove'
 
     def __str__(self):
         return self.value
@@ -78,14 +84,30 @@ class OpenShiftQuery():
         return OpenShiftQuery.__readFile(OpenShiftQuery.NAMESPACE_FILE_PATH)
 
     @staticmethod
-    def queryApi(urlSuffix):
-        request = urllib2.Request(OpenShiftQuery.API_URL + urlSuffix,
-            headers = {'Authorization': 'Bearer ' + OpenShiftQuery.getToken(), "Accept": 'application/json'})
+    def queryApi(urlSuffix, isPretty = False):
+        prettyPrintParam = '?pretty=true' if isPretty else ''
+        request = urllib2.Request(OpenShiftQuery.API_URL + urlSuffix + prettyPrintParam,
+            headers = {'Authorization': 'Bearer ' + OpenShiftQuery.getToken(), 'Accept': 'application/json'})
         logger.debug('query for: "%s"', request.get_full_url())
         try:
             return urllib2.urlopen(request, cafile = OpenShiftQuery.CERT_FILE_PATH).read()
         except:
             logger.critical('Cannot query OpenShift API for "%s"', request.get_full_url())
+            raise
+
+    @staticmethod
+    def patchApi(urlSuffix, contentType, jsonDataToSend):
+        request = urllib2.Request(OpenShiftQuery.API_URL + urlSuffix + '?pretty=true',
+            headers = {'Authorization': 'Bearer ' + OpenShiftQuery.getToken(),
+                       'Accept': 'application/json',
+                       'Content-Type': contentType},
+            data = jsonDataToSend)
+        request.get_method = lambda: 'PATCH'
+        logger.debug('query for: "%s"', request.get_full_url())
+        try:
+            return urllib2.urlopen(request, cafile = OpenShiftQuery.CERT_FILE_PATH).read()
+        except:
+            logger.critical('Cannot call PATCH to OpenShift API for "%s"', request.get_full_url())
             raise
 
 
@@ -117,6 +139,55 @@ def getLog(podName):
             .format(OpenShiftQuery.getNameSpace(), podName))
     return jsonText
 
+def getConfigMapData(configMapName):
+    namespace = OpenShiftQuery.getNameSpace()
+    jsonText = OpenShiftQuery.queryApi('/api/v1/namespaces/{}/configmaps/{}'.format(namespace, configMapName), True)
+    logger.debug('querying the config map %s at namespace %s got output %s', configMapName, namespace, jsonText)
+    jsonConfigMapData = json.loads(jsonText)
+    return jsonConfigMapData.get('data', dict()) # no data then empty dictionary
+
+def storeConfigMap(configMapName, recordToStore):
+    jsonDataToStore = json.dumps({
+        "kind": "ConfigMap",
+        "apiVersion": "v1",
+        "metadata": {
+            "name": configMapName
+        },
+        "data": {
+            recordToStore: recordToStore
+        }
+    })
+    jsonText = OpenShiftQuery.patchApi('/api/v1/namespaces/{}/configmaps/{}'.format(OpenShiftQuery.getNameSpace(), configMapName),
+                                       'application/merge-patch+json', jsonDataToStore)
+    logger.debug('on storing config map %s of value %s the returned value is %s', configMapName, recordToStore, jsonText)
+
+
+def deleteConfigMap(configMapName, recordToDelete):
+    jsonDataToStore = json.dumps([
+        {
+            "op": "remove",
+            "path": "/data/%s" % recordToDelete
+        }
+    ])
+    try:
+        jsonText = OpenShiftQuery.patchApi('/api/v1/namespaces/{}/configmaps/{}'.format(OpenShiftQuery.getNameSpace(), configMapName),
+                                           'application/json-patch+json', jsonDataToStore)
+        logger.debug('on removing config map %s of value %s the returned value is %s', configMapName, recordToDelete, jsonText)
+    except:
+        # the delete failed probably because there was not the value we wanted to delete but we want to ignore such situation
+        # still we want to end with failure when api is not available thus here we do second check on availability
+        jsonText = getConfigMapData(configMapName)
+        logger.debug('on removing config map %s the value %s did not exist, the data content is %s', configMapName, recordToDelete, jsonText)
+
+def _checkArguments(minNumber, errorMessage):
+    if len(args.args) < minNumber:
+        logger.critical(errorMessage)
+        exit(1)
+    for argCheck in args.args:
+        if argCheck is None:
+            logger.critical(errorMessage)
+            exit(1)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Queries OpenShift API, gathering the json and parsing it to get specific info from it")
     parser.add_argument("-q", "--query", required = False, type = QueryType, default = QueryType.PODS, choices=list(QueryType), help = "Query type/what to query")
@@ -139,10 +210,19 @@ if __name__ == "__main__":
     elif args.query == QueryType.PODS_LIVING:
         queryResult = getLivingPods()
     elif args.query == QueryType.LOG:
-        if len(args.args) < 0 or args.args[0] is None:
-            logger.critical('query of type "log" requires one argument to be an existing pod name')
-            exit(1)
+        _checkArguments(1, 'query of type "log" requires one argument to be an existing pod name')
         queryResult = getLog(args.args[0])
+    elif args.query == QueryType.CM_KEYS:
+        _checkArguments(1, 'query of type "cm" (config map) requires one argument to be an existing config map')
+        queryResult = getConfigMapData(args.args[0]).keys()
+    elif args.query == QueryType.CM_STORE:
+        _checkArguments(2, 'patching of type "cm" (config map) requires two arguments [an existing config map, value to store]')
+        storeConfigMap(args.args[0], args.args[1])
+        queryResult = ''
+    elif args.query == QueryType.CM_REMOVE:
+        _checkArguments(2, 'removing of type "cm" (config map) requires two arguments [an existing config map, value to remove]')
+        deleteConfigMap(args.args[0], args.args[1])
+        queryResult = ''
     else:
         logger.critical('No handler for query type %s', args.query)
         exit(1)

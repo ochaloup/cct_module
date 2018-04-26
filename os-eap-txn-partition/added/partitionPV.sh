@@ -27,18 +27,25 @@ function partitionPV() {
   local waitCounter=0
   # 2) while any file matching, sleep
   while true; do
-    local isRecoveryInProgress=false 
+    local isRecoveryInProgress=false
+    # TODO: expecting the ConfigMap ${CONFIG_MAP_MARKER_NAME} exists what if it won't exist? Script should probably create on for itself.
     # is there an existing RECOVERY descriptor that means a recovery is in progress
-    find "${podsDir}" -maxdepth 1 -type f -name "${POD_NAME}-RECOVERY-*" 2>/dev/null | grep -q .
-    [ $? -eq 0 ] && isRecoveryInProgress=true
+    unset recoveryMarkers
+    recoveryMarkers=($(python ${JBOSS_HOME}/bin/queryapi/query.py ${DEBUG_QUERY_API_PARAM} -f list_space -q cm_keys ${CONFIG_MAP_MARKER_NAME}))
+    local successOnApiConnection=$?
+    for recoveryMarker in ${recoveryMarkers[@]}; do
+      [[ "$recoveryMarker" =~ "${POD_NAME}-RECOVERY-" ]] && isRecoveryInProgress=true && break
+    done
 
-    # we are free to start the app container
-    if ! $isRecoveryInProgress; then
+    if [ $successOnApiConnection -ne 0 ]; then
+      # fail to connect OpenShift API server
+      echo "Failure on connecting to the OpenShift API server, let's wait and try again"
+    elif $isRecoveryInProgress; then
+      # recovery in progress
+      echo "Waiting to start pod ${POD_NAME} as recovery process '${recoveryMarker}' is currently cleaning data directory."
+    else
+      # we are free to start the app container
       break
-    fi
-
-    if $isRecoveryInProgress; then
-      echo "Waiting to start pod ${POD_NAME} as recovery process '$(echo ${podsDir}/${POD_NAME}-RECOVERY-*)' is currently cleaning data directory."
     fi
 
     sleep 1
@@ -96,13 +103,22 @@ function migratePV() {
       # check if the found file is type of directory, if not directory move to the next item
       [ ! -d "$applicationPodDir" ] && continue
 
-      # 1.a) create /pods/<applicationPodName>-RECOVERY-<recoveryPodName>
       local applicationPodName="$(basename ${applicationPodDir})"
-      touch "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
+
+      # doing potentialy two(!) checks for living pods for not writing to the etcd when not necessary, otherwise we would write in each cycle
+      echo "examining if the pod: '${applicationPodName}' is living"
+      unset LIVING_PODS
+      LIVING_PODS=($(python ${JBOSS_HOME}/bin/queryapi/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
+      # the pod is living thus not starting the recovery process
+      if arrContains ${applicationPodName} "${LIVING_PODS[@]}"; then
+        continue
+      fi
+
+      # 1.a) create <applicationPodName>-RECOVERY-<recoveryPodName> marker at etcd
+      python ${JBOSS_HOME}/bin/queryapi/query.py ${DEBUG_QUERY_API_PARAM} -q cm_store ${CONFIG_MAP_MARKER_NAME} "${applicationPodName}-RECOVERY-${recoveryPodName}"
       STATUS=42 # expecting there could be  error on getting living pods
 
       # 1.a.i) if <applicationPodName> is not in the cluster
-      echo "examining existence of living pod for directory: '${applicationPodDir}'"
       unset LIVING_PODS
       LIVING_PODS=($(python ${JBOSS_HOME}/bin/queryapi/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
       [ $? -ne 0 ] && echo "ERROR: Can't get list of living pods" && continue
@@ -148,28 +164,28 @@ function migratePV() {
         fi
       fi
 
-      # 1.b.) Deleting the recovery marker
+      # 1.b.) Deleting the recovery marker from etcd storage
       if [ $STATUS -eq 0 ] || [ $STATUS -eq -1 ]; then
         # STATUS is 0: we are free from in-doubt transactions, -1: there is a running pod of the same name (do the recovery on his own if needed)
-        rm -f "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
+        python ${JBOSS_HOME}/bin/queryapi/query.py ${DEBUG_QUERY_API_PARAM} -q cm_remove ${CONFIG_MAP_MARKER_NAME} "${applicationPodName}-RECOVERY-${recoveryPodName}"
       fi
+    done
 
-      # 2) Periodically, for files /pods/<applicationPodName>-RECOVERY-<recoveryPodName>, for failed recovery pods
-      for recoveryPodFilePathToCheck in "${podsDir}/"*-RECOVERY-*; do
-        local recoveryPodFileToCheck="$(basename ${recoveryPodFilePathToCheck})"
-        local recoveryPodNameToCheck=${recoveryPodFileToCheck#*RECOVERY-}
-
-        unset LIVING_PODS
-        LIVING_PODS=($(python ${JBOSS_HOME}/bin/queryapi/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
-        [ $? -ne 0 ] && echo "ERROR: Can't get list of living pods" && continue
-
+    # 2) Periodically, for recovery markers <applicationPodName>-RECOVERY-<recoveryPodName>, for failed recovery pods
+    local recoveryMarkers=($(python ${JBOSS_HOME}/bin/queryapi/query.py ${DEBUG_QUERY_API_PARAM} -f list_space -q cm_keys ${CONFIG_MAP_MARKER_NAME}))
+    unset LIVING_PODS
+    LIVING_PODS=($(python ${JBOSS_HOME}/bin/queryapi/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
+    if [ $? -ne 0 ]; then
+      echo "ERROR: Can't get list of living pods from OpenShift API. Garbage collection of recovery markers is not succesful this round."
+    else
+      for recoveryMarker in ${recoveryMarkers[@]}; do
+        local recoveryPodNameToCheck=${recoveryMarker#*RECOVERY-}
         if ! arrContains ${recoveryPodNameToCheck} "${LIVING_PODS[@]}"; then
           # recovery pod is dead, garbage collecting
-          rm -f "${recoveryPodFilePathToCheck}"
+          python ${JBOSS_HOME}/bin/queryapi/query.py ${DEBUG_QUERY_API_PARAM} -q cm_remove ${CONFIG_MAP_MARKER_NAME} "${recoveryMarker}"
         fi
       done
-
-    done
+    fi
 
     echo "`date`: Finished Migration Check cycle, pausing for ${MIGRATION_PAUSE} seconds before resuming"
     sleep "${MIGRATION_PAUSE}"

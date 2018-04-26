@@ -2,6 +2,15 @@
 
 [ "x${SCRIPT_DEBUG}" = "xtrue" ] && DEBUG_QUERY_API_PARAM="-l debug"
 
+# when jdbc object store used for transaction data we can save recovery marker to database too
+# IS_JDBC_RECOVERY_MARKER_PERMITTED: can be forced by user
+IS_JDBC_RECOVERY_MARKER_PERMITTED=${IS_JDBC_RECOVERY_MARKER_PERMITTED:-true}
+# IS_TX_SQL_BACKEND: depends on definition of jdbc credentials to connect to database
+IS_TX_SQL_BACKEND=false
+if [ -n "${TX_DATABASE_PREFIX_MAPPING}" ] && [ "$IS_JDBC_RECOVERY_MARKER_PERMITTED" = "true" ]; then
+    IS_TX_SQL_BACKEND=true
+fi
+
 # parameters
 # - needle to search in array
 # - array passed as: "${ARRAY_VAR[@]}"
@@ -52,21 +61,17 @@ function partitionPV() {
   init_pod_name
   local applicationPodDir="${podsDir}/${POD_NAME}"
 
+  $IS_TX_SQL_BACKEND && initHibernateProperties
+
   local waitCounter=0
   # 2) while any file matching, sleep
   while true; do
-    local isRecoveryInProgress=false
-    # is there an existing RECOVERY descriptor that means a recovery is in progress
-    find "${podsDir}" -maxdepth 1 -type f -name "${POD_NAME}-RECOVERY-*" 2>/dev/null | grep -q .
-    [ $? -eq 0 ] && isRecoveryInProgress=true
 
-    # we are free to start the app container
-    if ! $isRecoveryInProgress; then
-      break
-    fi
-
-    if $isRecoveryInProgress; then
+    if isRecoveryInProgress; then
       echo "Waiting to start pod ${POD_NAME} as recovery process '$(echo ${podsDir}/${POD_NAME}-RECOVERY-*)' is currently cleaning data directory."
+    else
+      # no recovery running: we are free to start the app container
+      break
     fi
 
     sleep 1
@@ -116,6 +121,8 @@ function migratePV() {
   init_pod_name
   local recoveryPodName="${POD_NAME}"
 
+  $IS_TX_SQL_BACKEND && initHibernateProperties
+
   while true ; do
 
     # 1) Periodically, for each /pods/<applicationPodName>
@@ -123,10 +130,9 @@ function migratePV() {
       # check if the found file is type of directory, if not directory move to the next item
       [ ! -d "$applicationPodDir" ] && continue
 
-      # 1.a) create /pods/<applicationPodName>-RECOVERY-<recoveryPodName>
+      # 1.a) create the recovery marker
       local applicationPodName="$(basename ${applicationPodDir})"
-      touch "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
-      sync
+      createRecoveryMarker "${podsDir}" "${applicationPodName}" "${recoveryPodName}"
       STATUS=42 # expecting there could be  error on getting living pods
 
       # 1.a.i) if <applicationPodName> is not in the cluster
@@ -183,25 +189,12 @@ function migratePV() {
       # 1.b.) Deleting the recovery marker
       if [ $STATUS -eq 0 ] || [ $IS_APPLICATION_POD_LIVING ]; then
         # STATUS is 0: we are free from in-doubt transactions
-        # IS_APPLICATION_POD_LIVING==true: there is a running pod of the same name, will do the recovery on his own, recovery pod won't manage it
-        rm -f "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
+        # IS_APPLICATION_POD_LIVING is true: there is a running pod of the same name, will do the recovery on his own, recovery pod won't manage it
+        removeRecoveryMarker
       fi
 
-      # 2) Periodically, for files /pods/<applicationPodName>-RECOVERY-<recoveryPodName>, for failed recovery pods
-      for recoveryPodFilePathToCheck in "${podsDir}/"*-RECOVERY-*; do
-        local recoveryPodFileToCheck="$(basename ${recoveryPodFilePathToCheck})"
-        local recoveryPodNameToCheck=${recoveryPodFileToCheck#*RECOVERY-}
-
-        unset LIVING_PODS
-        LIVING_PODS=($($(dirname ${BASH_SOURCE[0]})/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
-        [ $? -ne 0 ] && echo "ERROR: Can't get list of living pods" && continue
-
-        if ! arrContains ${recoveryPodNameToCheck} "${LIVING_PODS[@]}"; then
-          # recovery pod is dead, garbage collecting
-          rm -f "${recoveryPodFilePathToCheck}"
-        fi
-      done
-
+      # 2) checking for failed recovery pods to clean their data
+      recoveryPodsGarbageCollection
     done
 
     echo "`date`: Finished Migration Check cycle, pausing for ${MIGRATION_PAUSE} seconds before resuming"
@@ -209,6 +202,93 @@ function migratePV() {
     sleep "${MIGRATION_PAUSE}"
   done
 }
+
+# parameters
+# - no params
+function isRecoveryInProgress() {
+  local isRecoveryInProgress=false
+  if $IS_TX_SQL_BACKEND; then
+    # jdbc based recovery descriptor
+    recoveryMarkers=($(${JDBC_RECOVERY_MARKER_COMMAND} get_by_application ${POD_NAME}))
+    local isRecoveryInProgress=$? # 0: found some recovery records for the particular pod name, 1: no desired recovery record found
+  else
+    # shared file system based recovery descriptor
+    find "${podsDir}" -maxdepth 1 -type f -name "${POD_NAME}-RECOVERY-*" 2>/dev/null | grep -q .
+    # is there an existing RECOVERY descriptor that means a recovery is in progress
+    [ $? -eq 0 ] && isRecoveryInProgress=true
+  fi
+  $isRecoveryInProgress && return 0 || return 1
+}
+
+# parameters
+# - place where pod data directories are saved
+# - application pod name
+# - recovery pod name
+function createRecoveryMarker() {
+  local podsDir="${1}"
+  local applicationPodName="${2}"
+  local recoveryPodName="${3}"
+
+  if $IS_TX_SQL_BACKEND; then
+    # jdbc recovery marker insertion
+    ${JDBC_RECOVERY_MARKER_COMMAND} create ${applicationPodName} ${recoveryPodName}
+  else
+    # file system recovery marker creation: /pods/<applicationPodName>-RECOVERY-<recoveryPodName>
+    touch "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
+    sync
+  fi
+}
+
+# parameters
+# - place where pod data directories are saved (podsDir)
+# - application pod name
+# - recovery pod name
+function removeRecoveryMarker() {
+  local podsDir="${1}"
+  local applicationPodName="${2}"
+  local recoveryPodName="${3}"
+
+  if $IS_TX_SQL_BACKEND; then
+    # jdbc recovery marker removal
+    ${JDBC_RECOVERY_MARKER_COMMAND} delete ${applicationPodName} ${recoveryPodName}
+  else
+    # file system recovery marker deletion
+    rm -f "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
+    sync
+  fi
+}
+
+# parameters:
+# - place where pod data directories are saved (podsDir)
+function recoveryPodsGarbageCollection() {
+  local livingPods=($($(dirname ${BASH_SOURCE[0]})/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
+  if [ $? -ne 0 ]; then # fail to connect to openshift api
+    echo "ERROR: Can't get list of living pods. Can't do recovery marker garbage collection."
+    return 1
+  fi
+
+  if $IS_TX_SQL_BACKEND; then
+    # jdbc
+    local recoveryMarkers=($(${JDBC_RECOVERY_MARKER_COMMAND} get_all_recovery))
+    for recoveryPod in ${recoveryMarkers[@]}; do
+      if ! arrContains ${recoveryPod} "${livingPods[@]}"; then
+        # recovery pod is dead, garbage collecting
+        ${JDBC_RECOVERY_MARKER_COMMAND} delete_by_recovery ${recoveryPod}
+      fi
+    done
+  else
+    # file system
+    for recoveryPodFilePathToCheck in "${podsDir}/"*-RECOVERY-*; do
+      local recoveryPodFileToCheck="$(basename ${recoveryPodFilePathToCheck})"
+      local recoveryPodNameToCheck=${recoveryPodFileToCheck#*RECOVERY-}
+      if ! arrContains ${recoveryPodNameToCheck} "${livingPods[@]}"; then
+        # recovery pod is dead, garbage collecting
+        rm -f "${recoveryPodFilePathToCheck}"
+      fi
+    done
+  fi
+}
+
 
 # parameters
 # - pod name (optional)
@@ -241,7 +321,8 @@ function probePodLogForRecoveryErrors() {
 
   local isPeriodicRecoveryError=false
   local patternToCheck="ERROR.*Periodic Recovery"
-  [ "x${SCRIPT_DEBUG}" = "xtrue" ] && set +x # even for debug it's too verbose to print this pattern checking
+  # even for debug it's too verbose to print this pattern checking
+  [ "x${SCRIPT_DEBUG}" = "xtrue" ] && set +x
   while read line; do
     [[ $line =~ $patternToCheck ]] && isPeriodicRecoveryError=true && break
   done <<< "$logOutput"
@@ -253,4 +334,50 @@ function probePodLogForRecoveryErrors() {
   fi
 
   return 0
+}
+
+# parameters:
+# - properties file name which will be cleared and filled with properties for hibernate connection
+function initHibernateProperties() {
+  tx_backend=${TX_DATABASE_PREFIX_MAPPING}
+
+  service_name=${tx_backend%=*}
+  service=${service_name^^}
+  service=${service//-/_}
+  db=${service##*_}
+  prefix=${tx_backend#*=}
+
+  JDBC_RECOVERY_STORAGE_DB_HOST=$(find_env "${service}_SERVICE_HOST")
+  JDBC_RECOVERY_STORAGE_DB_PORT=$(find_env "${service}_SERVICE_PORT")
+  JDBC_RECOVERY_STORAGE_DATABASE=$(find_env "${prefix}_DATABASE")
+  JDBC_RECOVERY_STORAGE_USER=$(find_env "${prefix}_USERNAME")
+  JDBC_RECOVERY_STORAGE_PASSWORD=$(find_env "${prefix}_PASSWORD")
+  JDBC_RECOVERY_STORAGE_NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+
+    case "$db" in
+    "MYSQL")
+      JDBC_RECOVERY_STORAGE_URL="jdbc:mysql://${JDBC_RECOVERY_STORAGE_DB_HOST}:${JDBC_RECOVERY_STORAGE_DB_PORT}/${JDBC_RECOVERY_STORAGE_DATABASE}"
+      JDBC_RECOVERY_STORAGE_HIBERNATE_DIALECT='org.hibernate.dialect.MySQL5InnoDBDialect'
+      JDBC_RECOVERY_STORAGE_DRIVER_CLASS='com.mysql.jdbc.Driver'
+      JDBC_RECOVERY_STORAGE_JDBC_DRIVER_PATH="${JBOSS_HOME}/modules/system/layers/openshift/com/mysql/main/mysql-connector-java.jar"
+      ;;
+    "POSTGRESQL")
+      JDBC_RECOVERY_STORAGE_URL="jdbc:postgresql://${JDBC_RECOVERY_STORAGE_DB_HOST}:${JDBC_RECOVERY_STORAGE_DB_PORT}/${JDBC_RECOVERY_STORAGE_DATABASE}"
+      JDBC_RECOVERY_STORAGE_HIBERNATE_DIALECT='org.hibernate.dialect.PostgreSQL94Dialect'
+      JDBC_RECOVERY_STORAGE_DRIVER_CLASS='org.postgresql.Driver'
+      JDBC_RECOVERY_STORAGE_JDBC_DRIVER_PATH="${JBOSS_HOME}/modules/system/layers/openshift/org/postgresql/main/postgresql-jdbc.jar"
+      ;;
+  esac
+
+  # hibernate properties to be created
+  local propertiesFile=${1:-${JBOSS_HOME}/bin/querydb/hibernate.properties}
+  cat > "${propertiesFile}" <<EOF
+hibernate.dialect=${JDBC_RECOVERY_STORAGE_HIBERNATE_DIALECT}
+hibernate.connection.driver_class=${JDBC_RECOVERY_STORAGE_DRIVER_CLASS}
+hibernate.connection.url=${JDBC_RECOVERY_STORAGE_URL}
+hibernate.connection.username=${JDBC_RECOVERY_STORAGE_USER}
+hibernate.connection.password=${JDBC_RECOVERY_STORAGE_PASSWORD}
+EOF
+
+  JDBC_RECOVERY_MARKER_COMMAND="java -cp "$(dirname ${BASH_SOURCE[0]})/txn-recovery-marker-jdbc.jar:${JDBC_RECOVERY_STORAGE_JDBC_DRIVER_PATH}" -Dproperties.file="${propertiesFile}" -Ddb.table.name=JDBC_RECOVERY_${JDBC_RECOVERY_STORAGE_NAMESPACE} org.jboss.openshift.txrecovery.Main"
 }

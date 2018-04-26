@@ -6,6 +6,8 @@ ADDED_DIR=${SCRIPT_DIR}/added
 
 test -d /opt/partition || mkdir /opt/partition
 
-cp "$ADDED_DIR"/* /opt/partition/
+cp "${ADDED_DIR}"/query.py /opt/partition/
+cp "${ADDED_DIR}"/partitionPV.sh /opt/partition/
+cp "${ADDED_DIR}"/txn-recovery-marker-jdbc.jar /opt/partition/
 
 chmod 755 /opt/partition/*

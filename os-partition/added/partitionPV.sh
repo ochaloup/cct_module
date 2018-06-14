@@ -33,6 +33,7 @@ function init_pod_name() {
   if [ ${#POD_NAME} -gt 23 ]; then
     POD_NAME=${POD_NAME: -23}
   fi
+  POD_NAME=${POD_NAME##-} # do not start the identifier with '-', it makes issues with bash
 }
 
 # parameters

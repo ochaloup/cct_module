@@ -1,4 +1,6 @@
-[ "${SCRIPT_DEBUG}" = "true" ] && DEBUG_QUERY_API_PARAM="-l debug"
+#!/bin/sh
+
+[ "x${SCRIPT_DEBUG}" = "xtrue" ] && DEBUG_QUERY_API_PARAM="-l debug"
 
 # parameters
 # - needle to search in array

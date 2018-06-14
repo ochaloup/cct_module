@@ -1,6 +1,8 @@
 #!/bin/sh
 set -e
 
+unset DEBUG_QUERY_API_PARAM
+
 SCRIPT_DIR=$(dirname $0)
 ADDED_DIR=${SCRIPT_DIR}/added
 

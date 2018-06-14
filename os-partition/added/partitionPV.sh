@@ -12,6 +12,27 @@ function arrContains() {
   return 1
 }
 
+function init_pod_name() {
+  # when POD_NAME is non-zero length using that given name
+
+  # docker sets up container_uuid
+  [ -z "${POD_NAME}" ] && POD_NAME="${container_uuid}"
+  # openshift sets up the node id as host name
+  [ -z "${POD_NAME}" ] && POD_NAME="${HOSTNAME}"
+
+  # having set the POD_NAME is crucial as the processing depends on unique
+  # pod name being used as identifier for migration
+  if [ -z "${POD_NAME}" ]; then
+    >&2 echo "Cannot proceed further as failed to get unique POD_NAME as identifier of the server to be started"
+    exit 1
+  fi
+
+  # used as identifier for starting jboss container, need to restrict to 23 characters (CLOUD-427)
+  if [ ${#POD_NAME} -gt 23 ]; then
+    POD_NAME=${POD_NAME: -23}
+  fi
+}
+
 # parameters
 # - base directory
 function partitionPV() {
@@ -53,10 +74,8 @@ function partitionPV() {
     touch "${SERVER_DATA_DIR}/../data_initialized"
   fi
 
-  # 4) launch EAP with node name as pod name
-  #NODE_NAME="${POD_NAME}" runServer "${SERVER_DATA_DIR}" &
-  # node name cannot be longer than 23 chars
-  runServer "${SERVER_DATA_DIR}" &
+  # 4) launch server with node name as pod name (openshift-node-name.sh uses the node name value)
+  NODE_NAME="${POD_NAME}" runServer "${SERVER_DATA_DIR}" &
 
   PID=$!
 
@@ -75,16 +94,6 @@ function partitionPV() {
   fi
 
   exit $STATUS
-}
-
-function init_pod_name() {
-  # when POD_NAME is non-zero length using that given name
-
-  # docker sets up container_uuid
-  [ -z "${POD_NAME}" ] && POD_NAME="${container_uuid}"
-  # openshift sets up the node id as host name
-  [ -z "${POD_NAME}" ] && POD_NAME="${HOSTNAME}"
-  # TODO: fail when pod name is not set here?
 }
 
 # parameters
@@ -122,11 +131,7 @@ function migratePV() {
         (
           # 1.a.ii) run recovery until empty (including orphan checks and empty object store hierarchy deletion)
           SERVER_DATA_DIR="${applicationPodDir}/serverData"
-          JBOSS_NODE_NAME="$applicationPodName"
-          if [ ${#JBOSS_NODE_NAME} -gt 23 ]; then
-            JBOSS_NODE_NAME=${JBOSS_NODE_NAME: -23}
-          fi
-          runMigration "${SERVER_DATA_DIR}" &
+          NODE_NAME="$applicationPodName" runMigration "${SERVER_DATA_DIR}" &
 
           PID=$!
 

@@ -1,4 +1,6 @@
-[ "${SCRIPT_DEBUG}" = "true" ] && DEBUG_QUERY_API_PARAM="-l debug"
+#!/bin/sh
+
+[ "x${SCRIPT_DEBUG}" = "xtrue" ] && DEBUG_QUERY_API_PARAM="-l debug"
 
 # parameters
 # - needle to search in array
@@ -10,6 +12,33 @@ function arrContains() {
     [[ "$element" == "$match" ]] && return 0
   done
   return 1
+}
+
+function init_pod_name() {
+  # when POD_NAME is non-zero length using that given name
+
+  # docker sets up container_uuid
+  [ -z "${POD_NAME}" ] && POD_NAME="${container_uuid}"
+  # openshift sets up the node id as host name
+  [ -z "${POD_NAME}" ] && POD_NAME="${HOSTNAME}"
+
+  # having set the POD_NAME is crucial as the processing depends on unique
+  # pod name being used as identifier for migration
+  if [ -z "${POD_NAME}" ]; then
+    >&2 echo "Cannot proceed further as failed to get unique POD_NAME as identifier of the server to be started"
+    exit 1
+  fi
+}
+
+# used to redefine starting jboss.node.name as identifier of jboss container
+#   need to be restricted to 23 characters (CLOUD-427)
+function truncate_jboss_node_name() {
+  local NODE_NAME_TRUNCATED="$1"
+  if [ ${#1} -gt 23 ]; then
+    NODE_NAME_TRUNCATED=${1: -23}
+  fi
+  NODE_NAME_TRUNCATED=${NODE_NAME_TRUNCATED##-} # do not start the identifier with '-', it makes bash issues
+  echo "${NODE_NAME_TRUNCATED}"
 }
 
 # parameters
@@ -53,10 +82,8 @@ function partitionPV() {
     touch "${SERVER_DATA_DIR}/../data_initialized"
   fi
 
-  # 4) launch EAP with node name as pod name
-  #NODE_NAME="${POD_NAME}" runServer "${SERVER_DATA_DIR}" &
-  # node name cannot be longer than 23 chars
-  runServer "${SERVER_DATA_DIR}" &
+  # 4) launch server with node name as pod name (openshift-node-name.sh uses the node name value)
+  NODE_NAME=$(truncate_jboss_node_name "${POD_NAME}") runServer "${SERVER_DATA_DIR}" &
 
   PID=$!
 
@@ -75,16 +102,6 @@ function partitionPV() {
   fi
 
   exit $STATUS
-}
-
-function init_pod_name() {
-  # when POD_NAME is non-zero length using that given name
-
-  # docker sets up container_uuid
-  [ -z "${POD_NAME}" ] && POD_NAME="${container_uuid}"
-  # openshift sets up the node id as host name
-  [ -z "${POD_NAME}" ] && POD_NAME="${HOSTNAME}"
-  # TODO: fail when pod name is not set here?
 }
 
 # parameters
@@ -122,11 +139,7 @@ function migratePV() {
         (
           # 1.a.ii) run recovery until empty (including orphan checks and empty object store hierarchy deletion)
           SERVER_DATA_DIR="${applicationPodDir}/serverData"
-          JBOSS_NODE_NAME="$applicationPodName"
-          if [ ${#JBOSS_NODE_NAME} -gt 23 ]; then
-            JBOSS_NODE_NAME=${JBOSS_NODE_NAME: -23}
-          fi
-          runMigration "${SERVER_DATA_DIR}" &
+          NODE_NAME=$(truncate_jboss_node_name "${applicationPodName}") runMigration "${SERVER_DATA_DIR}" &
 
           PID=$!
 

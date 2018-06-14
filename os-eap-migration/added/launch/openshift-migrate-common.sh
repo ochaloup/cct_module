@@ -28,12 +28,6 @@ function runMigration() {
   ${JBOSS_HOME}/bin/readinessProbe.sh
   local probeStatus=$?
 
-  if [ $probeStatus -eq 0 ] && [ "$(type -t probePodLog)" = 'function' ]; then
-    # -- checking if server.log is clean from errors (only if function of the particular name exists)
-    probePodLog # calling function from partitionPV.sh
-    probeStatus=$?
-  fi
-
   if [ $probeStatus -eq 0 ] ; then
     echo "$(date): Server started, checking for transactions"
     local startTime=$(date +'%s')
@@ -53,7 +47,16 @@ function runMigration() {
         java -cp "${recoveryJar}" "${recoveryClass}" -host "${recoveryHost}" -port "${recoveryPort}"
       fi
     fi
+  fi
 
+  if [ $probeStatus -eq 0 ] && [ "$(type -t probePodLog)" = 'function' ]; then
+    # -- checking if server.log is clean from errors (only if function of the particular name exists)
+    probePodLog # calling function from partitionPV.sh
+    probeStatus=$?
+    [ $probeStatus -ne 0 ] && echo "server.log contains periodic recovery error, check it for details."
+  fi
+
+  if [ $probeStatus -eq 0 ] ; then
     while [ $(date +'%s') -lt $endTime -a ! -f "${terminatingFile}" ] ; do
       run_cli_cmd '/subsystem=transactions/log-store=log-store/:probe' > /dev/null 2>&1
       local transactions="$(run_cli_cmd 'ls /subsystem=transactions/log-store=log-store/transactions')"

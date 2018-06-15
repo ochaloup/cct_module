@@ -30,6 +30,7 @@ function init_pod_name() {
   fi
 
   # used as identifier for starting jboss container, need to restrict to 23 characters (CLOUD-427)
+  echo "\$POD_NAME before truncating took value '${POD_NAME}'"
   if [ ${#POD_NAME} -gt 23 ]; then
     POD_NAME=${POD_NAME: -23}
   fi

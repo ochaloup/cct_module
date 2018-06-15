@@ -28,13 +28,17 @@ function init_pod_name() {
     >&2 echo "Cannot proceed further as failed to get unique POD_NAME as identifier of the server to be started"
     exit 1
   fi
+}
 
-  # used as identifier for starting jboss container, need to restrict to 23 characters (CLOUD-427)
-  echo "\$POD_NAME before truncating took value '${POD_NAME}'"
-  if [ ${#POD_NAME} -gt 23 ]; then
-    POD_NAME=${POD_NAME: -23}
+# used to redefine starting jboss.node.name as identifier of jboss container
+#   need to be restricted to 23 characters (CLOUD-427)
+function truncate_jboss_node_name() {
+  local NODE_NAME_TRUNCATED="$1"
+  if [ ${#1} -gt 23 ]; then
+    NODE_NAME_TRUNCATED=${1: -23}
   fi
-  POD_NAME=${POD_NAME##-} # do not start the identifier with '-', it makes bash issues
+  NODE_NAME_TRUNCATED=${NODE_NAME_TRUNCATED##-} # do not start the identifier with '-', it makes bash issues
+  echo "${NODE_NAME_TRUNCATED}"
 }
 
 # parameters
@@ -79,7 +83,7 @@ function partitionPV() {
   fi
 
   # 4) launch server with node name as pod name (openshift-node-name.sh uses the node name value)
-  NODE_NAME="${POD_NAME}" runServer "${SERVER_DATA_DIR}" &
+  NODE_NAME=$(truncate_jboss_node_name "${POD_NAME}") runServer "${SERVER_DATA_DIR}" &
 
   PID=$!
 
@@ -135,7 +139,7 @@ function migratePV() {
         (
           # 1.a.ii) run recovery until empty (including orphan checks and empty object store hierarchy deletion)
           SERVER_DATA_DIR="${applicationPodDir}/serverData"
-          NODE_NAME="$applicationPodName" runMigration "${SERVER_DATA_DIR}" &
+          NODE_NAME=$(truncate_jboss_node_name "${applicationPodName}") runMigration "${SERVER_DATA_DIR}" &
 
           PID=$!
 

@@ -113,15 +113,23 @@ def getLivingPods():
             pods.append(pod["metadata"]["name"])
     return pods
 
-def getLog(podName):
-    jsonText = OpenShiftQuery.queryApi('/api/v1/namespaces/{}/pods/{}/log'
-            .format(OpenShiftQuery.getNameSpace(), podName))
-    return jsonText
+def getLog(podName, sinceTime, tailLine):
+    sinceTimeParam = '' if sinceTime is None else '&sinceTime=' + sinceTime
+    tailLineParam = '' if tailLine is None else '&tailLines=' + tailLine
+    podLogLines = OpenShiftQuery.queryApi('/api/v1/namespaces/{}/pods/{}/log?timestamps=true{}{}'
+            .format(OpenShiftQuery.getNameSpace(), podName, sinceTimeParam, tailLineParam))
+    return podLogLines
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Queries OpenShift API, gathering the json and parsing it to get specific info from it")
-    parser.add_argument("-q", "--query", required = False, type = QueryType, default = QueryType.PODS, choices=list(QueryType), help = "Query type/what to query")
+    parser.add_argument("-q", "--query", required = False, type = QueryType, default = QueryType.PODS, choices=list(QueryType), help = "Query type/what to query\n"
+      + "either printing log of a pod, or listing of all pods in the current namespace, or listing of living pods in the current namespace")
     parser.add_argument("-f", "--format", required = False, type = OutputFormat, default = OutputFormat.RAW, choices=list(OutputFormat), help = "Output format")
+    parser.add_argument("--pod", required = False, type = str, default = None, help = "Pod name to work with")
+    parser.add_argument("--sincetime", required = False, type = str, default = None,
+        help = "what is time to log will be started to be shown from (relevant with '--query log')")
+    parser.add_argument("--tailline", required = False, type = str, default = None,
+        help = "how many lines to be printed from end of the log (relevant with '--query log')")
     parser.add_argument("-l", "--loglevel", default="CRITICAL", help="Log level",
         choices=["debug", "DEBUG", "info", "INFO", "warning", "WARNING", "error", "ERROR", "critical", "CRITICAL"])
     parser.add_argument("args", nargs = argparse.REMAINDER, help = "Arguments of the query (each query type has different)")
@@ -140,10 +148,13 @@ if __name__ == "__main__":
     elif args.query == QueryType.PODS_LIVING:
         queryResult = getLivingPods()
     elif args.query == QueryType.LOG:
-        if len(args.args) < 0 or args.args[0] is None:
-            logger.critical('query of type "log" requires one argument to be an existing pod name')
+        if args.pod is None:
+            logger.critical('query of type "--query log" requires one argument to be an existing pod name')
             exit(1)
-        queryResult = getLog(args.args[0])
+        podName = args.pod
+        sinceTime = args.sincetime
+        tailLine = args.tailline
+        queryResult = getLog(podName, sinceTime, tailLine)
     else:
         logger.critical('No handler for query type %s', args.query)
         exit(1)
@@ -153,6 +164,6 @@ if __name__ == "__main__":
     elif args.format == OutputFormat.LIST_COMMA:
         print ','.join(queryResult)
     else: # RAW format
-        print queryResult
+        print queryResult,
 
     exit(0)

@@ -205,11 +205,25 @@ function migratePV() {
 
 # parameters
 # - pod name (optional)
-function probePodLog() {
+function getCurrentPodLogTimestamp() {
   init_pod_name
   local podNameToProbe=${1:-$POD_NAME}
 
-  local logOutput=$($(dirname ${BASH_SOURCE[0]})/query.py -q log ${podNameToProbe})
+  local logOutput=$($(dirname ${BASH_SOURCE[0]})/query.py -q log --pod ${podNameToProbe} --tailline 1)
+  # only one, last line of the log, is returned, taking the start which is timestamp
+  echo $logOutput | sed 's/ .*$//'
+}
+
+# parameters
+# - since time (when the pod listing start at)
+# - pod name (optional)
+function probePodLogForRecoveryErrors() {
+  init_pod_name
+  local sinceTimestampParam=''
+  [ "x$1" != "x" ] && sinceTimestampParam="--sincetime ${1}"
+  local podNameToProbe=${2:-$POD_NAME}
+
+  local logOutput=$($(dirname ${BASH_SOURCE[0]})/query.py -q log --pod ${podNameToProbe} ${sinceTimestampParam})
   local probeStatus=$?
 
   if [ $probeStatus -ne 0 ]; then
@@ -219,9 +233,12 @@ function probePodLog() {
 
   local isPeriodicRecoveryError=false
   local patternToCheck="ERROR.*Periodic Recovery"
+  [ "x${SCRIPT_DEBUG}" = "xtrue" ] && set +x # even for debug it's too verbose to print this pattern checking
   while read line; do
     [[ $line =~ $patternToCheck ]] && isPeriodicRecoveryError=true && break
   done <<< "$logOutput"
+  [ "x${SCRIPT_DEBUG}" = "xtrue" ] && set -x
+
   if $isPeriodicRecoveryError; then # ERROR string was found in the log output
     echo "Server at ${NAMESPACE}/${POD_NAME} started with errors"
     return 1

@@ -30,6 +30,10 @@ function runMigration() {
 
   if [ $probeStatus -eq 0 ] ; then
     echo "$(date): Server started, checking for transactions"
+
+    # investigating on current pod timestamp
+  	local serverStartupLogTimeStamp=getCurrentPodLogTimestamp
+
     local startTime=$(date +'%s')
     local endTime=$((startTime + ${RECOVERY_TIMEOUT} + 1))
 
@@ -49,9 +53,9 @@ function runMigration() {
     fi
   fi
 
-  if [ $probeStatus -eq 0 ] && [ "$(type -t probePodLog)" = 'function' ]; then
+  if [ $probeStatus -eq 0 ]; then
     # -- checking if server.log is clean from errors (only if function of the particular name exists)
-    probePodLog # calling function from partitionPV.sh
+    probePodLogForRecoveryErrors "${serverStartupLogTimeStamp}" # calling function from partitionPV.sh
     probeStatus=$?
     [ $probeStatus -ne 0 ] && echo "server.log contains periodic recovery error, check it for details."
   fi

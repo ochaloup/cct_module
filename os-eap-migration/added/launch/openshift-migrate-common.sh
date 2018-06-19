@@ -49,6 +49,7 @@ function runMigration() {
         java -cp "${recoveryJar}" "${recoveryClass}" -host "${recoveryHost}" -port "${recoveryPort}"
         echo "$(date): Executing synchronous recovery scan for a second time"
         java -cp "${recoveryJar}" "${recoveryClass}" -host "${recoveryHost}" -port "${recoveryPort}"
+        echo "$(date): Recovery scan finished for first and second time"
       fi
     fi
   fi

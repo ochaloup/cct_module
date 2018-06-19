@@ -240,7 +240,7 @@ function probePodLogForRecoveryErrors() {
   [ "x${SCRIPT_DEBUG}" = "xtrue" ] && set -x
 
   if $isPeriodicRecoveryError; then # ERROR string was found in the log output
-    echo "Server at ${NAMESPACE}/${POD_NAME} started with errors"
+    echo "Server at the pod '${POD_NAME}' started with errors"
     return 1
   fi
 

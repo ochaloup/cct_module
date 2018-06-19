@@ -32,7 +32,7 @@ function runMigration() {
     echo "$(date): Server started, checking for transactions"
 
     # investigating on current pod timestamp
-  	local serverStartupLogTimeStamp=getCurrentPodLogTimestamp
+    local serverStartupLogTimeStamp=$(getCurrentPodLogTimestamp)
 
     local startTime=$(date +'%s')
     local endTime=$((startTime + ${RECOVERY_TIMEOUT} + 1))

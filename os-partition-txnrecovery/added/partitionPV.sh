@@ -126,6 +126,7 @@ function migratePV() {
       # 1.a) create /pods/<applicationPodName>-RECOVERY-<recoveryPodName>
       local applicationPodName="$(basename ${applicationPodDir})"
       touch "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
+      sync
       STATUS=42 # expecting there could be  error on getting living pods
 
       # 1.a.i) if <applicationPodName> is not in the cluster

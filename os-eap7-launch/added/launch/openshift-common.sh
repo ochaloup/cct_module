@@ -4,6 +4,8 @@
 if [ "${SCRIPT_DEBUG}" = "true" ] ; then
     set -x
     echo "Script debugging is enabled, allowing bash commands and their arguments to be printed as they are executed"
+    echo "I'm openshift common and I want this being shown"
+    set -x
 fi
 
 CONFIG_FILE=$JBOSS_HOME/standalone/configuration/standalone-openshift.xml

@@ -61,7 +61,7 @@ function partitionPV() {
   init_pod_name
   local applicationPodDir="${podsDir}/${POD_NAME}"
 
-  $IS_TX_SQL_BACKEND && initHibernateProperties
+  $IS_TX_SQL_BACKEND && initJdbcRecoveryMarkerProperties
 
   local waitCounter=0
   # 2) while any file matching, sleep
@@ -121,7 +121,7 @@ function migratePV() {
   init_pod_name
   local recoveryPodName="${POD_NAME}"
 
-  $IS_TX_SQL_BACKEND && initHibernateProperties
+  $IS_TX_SQL_BACKEND && initJdbcRecoveryMarkerProperties
 
   while true ; do
 
@@ -211,8 +211,8 @@ function isRecoveryInProgress() {
   local isRecoveryInProgress=false
   if $IS_TX_SQL_BACKEND; then
     # jdbc based recovery descriptor
-    recoveryMarkers=($(${JDBC_RECOVERY_MARKER_COMMAND} get_by_application ${POD_NAME}))
-    local isRecoveryInProgress=$? # 0: found some recovery records for the particular pod name, 1: no desired recovery record found
+    recoveryMarkers=($(${JDBC_RECOVERY_MARKER_COMMAND} select_recovery -a ${POD_NAME}))
+    local isRecoveryInProgress=[ ${#recoveryMarkers[@]} -ne 0 ] # array is not empty, there are recovery markers existing
   else
     # shared file system based recovery descriptor
     find "${podsDir}" -maxdepth 1 -type f -name "${POD_NAME}-RECOVERY-*" 2>/dev/null | grep -q .
@@ -233,7 +233,7 @@ function createRecoveryMarker() {
 
   if $IS_TX_SQL_BACKEND; then
     # jdbc recovery marker insertion
-    ${JDBC_RECOVERY_MARKER_COMMAND} create ${applicationPodName} ${recoveryPodName}
+    ${JDBC_RECOVERY_MARKER_COMMAND} insert -a ${applicationPodName} -r ${recoveryPodName}
   else
     # file system recovery marker creation: /pods/<applicationPodName>-RECOVERY-<recoveryPodName>
     touch "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
@@ -252,7 +252,7 @@ function removeRecoveryMarker() {
 
   if $IS_TX_SQL_BACKEND; then
     # jdbc recovery marker removal
-    ${JDBC_RECOVERY_MARKER_COMMAND} delete ${applicationPodName} ${recoveryPodName}
+    ${JDBC_RECOVERY_MARKER_COMMAND} delete -a ${applicationPodName} -r ${recoveryPodName}
   else
     # file system recovery marker deletion
     rm -f "${podsDir}/${applicationPodName}-RECOVERY-${recoveryPodName}"
@@ -271,11 +271,11 @@ function recoveryPodsGarbageCollection() {
 
   if $IS_TX_SQL_BACKEND; then
     # jdbc
-    local recoveryMarkers=($(${JDBC_RECOVERY_MARKER_COMMAND} get_all_recovery))
+    local recoveryMarkers=($(${JDBC_RECOVERY_MARKER_COMMAND} select_recovery))
     for recoveryPod in ${recoveryMarkers[@]}; do
       if ! arrContains ${recoveryPod} "${livingPods[@]}"; then
         # recovery pod is dead, garbage collecting
-        ${JDBC_RECOVERY_MARKER_COMMAND} delete_by_recovery ${recoveryPod}
+        ${JDBC_RECOVERY_MARKER_COMMAND} delete -r ${recoveryPod}
       fi
     done
   else
@@ -339,8 +339,8 @@ function probePodLogForRecoveryErrors() {
 }
 
 # parameters:
-# - properties file name which will be cleared and filled with properties for hibernate connection
-function initHibernateProperties() {
+# - no params
+function initJdbcRecoveryMarkerProperties() {
   tx_backend=${TX_DATABASE_PREFIX_MAPPING}
 
   service_name=${tx_backend%=*}
@@ -349,37 +349,22 @@ function initHibernateProperties() {
   db=${service##*_}
   prefix=${tx_backend#*=}
 
-  JDBC_RECOVERY_STORAGE_DB_HOST=$(find_env "${service}_SERVICE_HOST")
-  JDBC_RECOVERY_STORAGE_DB_PORT=$(find_env "${service}_SERVICE_PORT")
-  JDBC_RECOVERY_STORAGE_DATABASE=$(find_env "${prefix}_DATABASE")
-  JDBC_RECOVERY_STORAGE_USER=$(find_env "${prefix}_USERNAME")
-  JDBC_RECOVERY_STORAGE_PASSWORD=$(find_env "${prefix}_PASSWORD")
-  JDBC_RECOVERY_STORAGE_NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+  JDBC_RECOVERY_DB_HOST=$(find_env "${service}_SERVICE_HOST")
+  JDBC_RECOVERY_DB_PORT=$(find_env "${service}_SERVICE_PORT")
+  JDBC_RECOVERY_DATABASE=$(find_env "${prefix}_DATABASE")
+  JDBC_RECOVERY_USER=$(find_env "${prefix}_USERNAME")
+  JDBC_RECOVERY_PASSWORD=$(find_env "${prefix}_PASSWORD")
+  JDBC_RECOVERY_NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+  JDBC_RECOVERY_TABLE="JDBC_RECOVERY_${JDBC_RECOVERY_STORAGE_NAMESPACE}"
 
     case "$db" in
     "MYSQL")
-      JDBC_RECOVERY_STORAGE_URL="jdbc:mysql://${JDBC_RECOVERY_STORAGE_DB_HOST}:${JDBC_RECOVERY_STORAGE_DB_PORT}/${JDBC_RECOVERY_STORAGE_DATABASE}"
-      JDBC_RECOVERY_STORAGE_HIBERNATE_DIALECT='org.hibernate.dialect.MySQL5InnoDBDialect'
-      JDBC_RECOVERY_STORAGE_DRIVER_CLASS='com.mysql.jdbc.Driver'
-      JDBC_RECOVERY_STORAGE_JDBC_DRIVER_PATH="${JBOSS_HOME}/modules/system/layers/openshift/com/mysql/main/mysql-connector-java.jar"
+      JDBC_RECOVERY_DB_TYPE='mysql'
       ;;
     "POSTGRESQL")
-      JDBC_RECOVERY_STORAGE_URL="jdbc:postgresql://${JDBC_RECOVERY_STORAGE_DB_HOST}:${JDBC_RECOVERY_STORAGE_DB_PORT}/${JDBC_RECOVERY_STORAGE_DATABASE}"
-      JDBC_RECOVERY_STORAGE_HIBERNATE_DIALECT='org.hibernate.dialect.PostgreSQL94Dialect'
-      JDBC_RECOVERY_STORAGE_DRIVER_CLASS='org.postgresql.Driver'
-      JDBC_RECOVERY_STORAGE_JDBC_DRIVER_PATH="${JBOSS_HOME}/modules/system/layers/openshift/org/postgresql/main/postgresql-jdbc.jar"
+      JDBC_RECOVERY_DB_TYPE='postgresql'
       ;;
   esac
 
-  # hibernate properties to be created
-  local propertiesFile=${1:-${JBOSS_HOME}/bin/querydb/hibernate.properties}
-  cat > "${propertiesFile}" <<EOF
-hibernate.dialect=${JDBC_RECOVERY_STORAGE_HIBERNATE_DIALECT}
-hibernate.connection.driver_class=${JDBC_RECOVERY_STORAGE_DRIVER_CLASS}
-hibernate.connection.url=${JDBC_RECOVERY_STORAGE_URL}
-hibernate.connection.username=${JDBC_RECOVERY_STORAGE_USER}
-hibernate.connection.password=${JDBC_RECOVERY_STORAGE_PASSWORD}
-EOF
-
-  JDBC_RECOVERY_MARKER_COMMAND="java -cp "$(dirname ${BASH_SOURCE[0]})/txn-recovery-marker-jdbc.jar:${JDBC_RECOVERY_STORAGE_JDBC_DRIVER_PATH}" -Dproperties.file="${propertiesFile}" -Ddb.table.name=JDBC_RECOVERY_${JDBC_RECOVERY_STORAGE_NAMESPACE} org.jboss.openshift.txrecovery.Main"
+  JDBC_RECOVERY_MARKER_COMMAND="$(dirname ${BASH_SOURCE[0]})/querydb.py -y ${JDBC_RECOVERY_DB_TYPE} -o ${JDBC_RECOVERY_DB_HOST} -p ${JDBC_RECOVERY_DB_PORT} -d ${JDBC_RECOVERY_DATABASE} -u ${JDBC_RECOVERY_USER} -s ${JDBC_RECOVERY_PASSWORD} -t ${JDBC_RECOVERY_TABLE} -c"
 }

@@ -12,3 +12,4 @@ packages:
         - python-requests
         - python-dbms
         - python-psycopg2
+        - python-mysql-connector

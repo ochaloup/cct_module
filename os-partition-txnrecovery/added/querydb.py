@@ -83,8 +83,10 @@ class DatabaseWorker():
 
     def __init__(self, databaseType, host, port, databaseName, userName, password, tableName):
         if(databaseType == DatabaseType.POSTGRESQL):
+            if port is None: port = 5432
             self.Connection = dbms.connect.postgres(userName, password, databaseName, host, port)
         elif(databaseType == DatabaseType.MYSQL):
+            if port is None: port = 3306
             self.Connection = dbms.connect.mysql(userName, password, databaseName, host, port)
         else:
             logger.critical("Database type '%s' is not supported", databaseType)
@@ -114,7 +116,6 @@ class DatabaseWorker():
     def selectRecord(self, applicationPodName, recoveryPodName):
         whereClause = self._getWhereClause(applicationPodName, recoveryPodName)
         self.Cursor.execute("SELECT * FROM %s WHERE %s" % (self.TableName, whereClause))
-        self.Connection.commit()
         return self.Cursor
 
     def _getWhereClause(self, applicationPodName, recoveryPodName):
@@ -145,7 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("-y", "--type_db", required = False, type = DatabaseType, default = DatabaseType.POSTGRESQL, choices=list(DatabaseType),
       help = "Database type the script will be working with")
     parser.add_argument("-o", "--host", required=False, type=str, default='localhost', help="Hostname where the database runs")
-    parser.add_argument("-p", "--port", required=False, type=int, default=5432, help="Port where the database runs")
+    parser.add_argument("-p", "--port", required=False, type=int, help="Port where the database runs")
     parser.add_argument("-d", "--database", required=True, type=str, default=None, help="Databese name to connect to at the host and port")
     parser.add_argument("-u", "--user", required=True, type=str, default=None, help="Username at the database to connect to")
     parser.add_argument("-s", "--password", required=True, type=str, default=None, help="Password for the username at the database to connect to")

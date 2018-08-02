@@ -10,6 +10,5 @@ packages:
     install:
         - python-enum34
         - python-requests
-        - python-dbms
         - python-psycopg2
-        - python-mysql-connector
+        - mysql-connector-python3

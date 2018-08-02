@@ -16,7 +16,8 @@ permissions and limitations under the License.
 """
 
 import argparse
-import dbms
+import psycopg2
+import mysql.connector
 import logging
 from enum import Enum
 
@@ -84,10 +85,10 @@ class DatabaseWorker():
     def __init__(self, databaseType, host, port, databaseName, userName, password, tableName):
         if(databaseType == DatabaseType.POSTGRESQL):
             if port is None: port = 5432
-            self.Connection = dbms.connect.postgres(userName, password, databaseName, host, port)
+            self.Connection = psycopg2.connect("user='%s' password='%s' dbname='%s' host='%s' port='%s'" % (userName, password, databaseName, host, port))
         elif(databaseType == DatabaseType.MYSQL):
             if port is None: port = 3306
-            self.Connection = dbms.connect.mysql(userName, password, databaseName, host, port)
+            self.Connection = mysql.connector.connect(user = userName, password = password, database = databaseName, host = host, port = port)
         else:
             logger.critical("Database type '%s' is not supported", databaseType)
             exit(1)

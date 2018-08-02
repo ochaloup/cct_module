@@ -40,13 +40,15 @@ class CommandType(Enum):
     CREATE_SCHEMA: create db tables, if they do not exist otherwise ignored
     INSERT: insert the recovery marker record
     DELETE: delete recovery marker record
-    GET_RECOVERY_POD_NAMES: return names of recovery pods
+    SELECT_RECOVERY: select recovery pod names
+    SELECT_APPLICATION: select application pod names
     """
 
     CREATE_SCHEMA = 'create'
     INSERT = 'insert'
     DELETE = 'delete'
-    GET_RECOVERY_POD_NAMES = 'get_recovery_pod_names'
+    SELECT_RECOVERY = 'select_recovery'
+    SELECT_APPLICATION = 'select_application'
 
     def __str__(self):
         return self.value
@@ -76,6 +78,9 @@ class DatabaseWorker():
     Connection = None
     Cursor = None
 
+    ApplicationPodNameColumnName = 'APPLICATION_POD_NAME'
+    RecoveryPodNameColumnName = 'RECOVERY_POD_NAME'
+
     def __init__(self, databaseType, host, port, databaseName, userName, password, tableName):
         if(databaseType == DatabaseType.POSTGRESQL):
             self.Connection = dbms.connect.postgres(userName, password, databaseName, host, port)
@@ -88,18 +93,52 @@ class DatabaseWorker():
         self.TableName = tableName
         self.Cursor = self.Connection.cursor()
 
+    def __str__(self):
+        return str(self.__dict__)
+
     def createSchema(self):
-        print(self.TableName)
-        self.Cursor.execute('CREATE TABLE %s (APPLICATION_POD_NAME varchar(255), RECOVERY_POD_NAME varchar(255));' % self.TableName)
+        self.Cursor.execute('CREATE TABLE %s (%s varchar(255), %s varchar(255))'
+            % (self.TableName, self.ApplicationPodNameColumnName, self.RecoveryPodNameColumnName))
+        self.Connection.commit()
 
+    def insertRecord(self, applicationPodName, recoveryPodName):
+        self.Cursor.execute("INSERT INTO %s (%s, %s) VALUES ('%s', '%s')"
+            % (self.TableName, self.ApplicationPodNameColumnName, self.RecoveryPodNameColumnName, applicationPodName, recoveryPodName))
+        self.Connection.commit()
 
+    def deleteRecord(self, applicationPodName, recoveryPodName):
+        whereClause = self._getWhereClause(applicationPodName, recoveryPodName)
+        self.Cursor.execute("DELETE FROM %s WHERE %s" % (self.TableName, whereClause))
+        self.Connection.commit()
 
-# todo:
-# ${JDBC_RECOVERY_MARKER_COMMAND} delete ${applicationPodName} ${recoveryPodName}
-# ${JDBC_RECOVERY_MARKER_COMMAND} create ${applicationPodName} ${recoveryPodName}
+    def selectRecord(self, applicationPodName, recoveryPodName):
+        whereClause = self._getWhereClause(applicationPodName, recoveryPodName)
+        self.Cursor.execute("SELECT * FROM %s WHERE %s" % (self.TableName, whereClause))
+        self.Connection.commit()
+        return self.Cursor
+
+    def _getWhereClause(self, applicationPodName, recoveryPodName):
+        whereClause = ''
+        if applicationPodName is not None:
+            whereClause += "%s = '%s'" % (self.ApplicationPodNameColumnName, applicationPodName)
+        if recoveryPodName is not None:
+            if whereClause != '': whereClause += ' AND '
+            whereClause += "%s = '%s'" % (self.RecoveryPodNameColumnName, recoveryPodName)
+        return whereClause
+
+        # todo:
 # ${JDBC_RECOVERY_MARKER_COMMAND} get_by_application ${POD_NAME}
-# ${JDBC_RECOVERY_MARKER_COMMAND} delete_by_recovery ${recoveryPod}
 
+def requireArgument(value, commandName, argumentName):
+    if value is None and str(value):
+        logger.critical("Required argument '%s' for the command '%s' was not specified", argumentName, commandName)
+        exit(1)
+
+def requireAtLeastOneArgument(command, values, argumentNames):
+    for value in values:
+        if value is not None: return
+    logger.critical("At least one of the arguments '%s' has to be defined for command '%s'", argumentNames, command)
+    exit(1)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Commandline script to create and store txn recovery markers in database")
@@ -112,7 +151,7 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--password", required=True, type=str, default=None, help="Password for the username at the database to connect to")
 
     parser.add_argument("-t", "--table_name", required = False, type = str, default = 'JDBC_RECOVERY', help = "Table name to be working with")
-    parser.add_argument("-c", "--command", required = False, type = CommandType, default = CommandType.GET_RECOVERY_POD_NAMES, choices=list(CommandType),
+    parser.add_argument("-c", "--command", required = False, type = CommandType, default = CommandType.SELECT_RECOVERY, choices=list(CommandType),
       help = "Command to run in database,\navailable options are to create db schema, to insert a record, to delete the record and list recovery pod names")
     parser.add_argument("-a", "--application_pod_name", required = False, type = str, default = None, help = "Application pod name which\n"
       + " will be either inserted/deleted onto database or by which query will be filtered")
@@ -130,23 +169,40 @@ if __name__ == "__main__":
     logging.basicConfig(level = args.loglevel.upper())
     logger = logging.getLogger(__name__)
 
-    logger.debug("Database command is going to be executed with arguments: %s", args)
+    logger.debug("Changing database based on arguments: %s", args)
+
+    resultsList = []
 
     db = DatabaseWorker(args.type_db, args.host, args.port, args.database, args.user, args.password, args.table_name)
     if args.command == CommandType.CREATE_SCHEMA:
+        logger.debug("Creating database table '%s', at: '%s'", args.table_name, db)
         db.createSchema()
+    elif args.command == CommandType.INSERT:
+        requireArgument(args.application_pod_name, args.command, 'application_pod_name')
+        requireArgument(args.recovery_pod_name, args.command, 'recovery_pod_name')
+        logger.debug("Inserting a record [%s, %s],  at: '%s'", args.application_pod_name, args.recovery_pod_name, db)
+        db.insertRecord(args.application_pod_name, args.recovery_pod_name)
+    elif args.command == CommandType.DELETE:
+        requireAtLeastOneArgument(args.command,
+            {args.application_pod_name, args.recovery_pod_name}, ['application_pod_name', 'recovery_pod_name'])
+        logger.debug("Deleting record [%s, %s],  at: '%s'", args.application_pod_name, args.recovery_pod_name, db)
+        db.deleteRecord(args.application_pod_name, args.recovery_pod_name)
+    elif 'select' in str(args.command):
+        requireAtLeastOneArgument(args.command,
+            {args.application_pod_name, args.recovery_pod_name}, ['application_pod_name', 'recovery_pod_name'])
+        logger.debug("Selecting recovery pod names filtered on [%s, %s],  at: '%s'", args.application_pod_name, args.recovery_pod_name, db)
+        cursor = db.selectRecord(args.application_pod_name, args.recovery_pod_name)
+        rowIndex = 0 if args.command == CommandType.SELECT_APPLICATION else  1
+        for results in cursor.fetchall():
+            resultsList.append(results[rowIndex])
     else:
         logger.critical('No handler for command %s', args.command)
         exit(1)
 
-    # if args.format == OutputFormat.LIST_SPACE:
-    #     print ' '.join(queryResult)
-    # elif args.format == OutputFormat.LIST_COMMA:
-    #     print ','.join(queryResult)
-    # else: # RAW format
-    #     print queryResult,
-
-    exit(0)
-
-
-
+    if resultsList: # result list is not empty
+        if args.format == OutputFormat.LIST_SPACE:
+            print(' '.join(resultsList))
+        elif args.format == OutputFormat.LIST_COMMA:
+            print(','.join(resultsList))
+        else: # RAW format
+            print(resultsList,)

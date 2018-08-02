@@ -138,7 +138,7 @@ function migratePV() {
       # 1.a.i) if <applicationPodName> is not in the cluster
       echo "examining existence of living pod for directory: '${applicationPodDir}'"
       unset LIVING_PODS
-      LIVING_PODS=($($(dirname ${BASH_SOURCE[0]})/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
+      LIVING_PODS=($($(dirname ${BASH_SOURCE[0]})/queryosapi.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
       [ $? -ne 0 ] && echo "ERROR: Can't get list of living pods" && continue
       # expecting the application pod of the same name was started/is living, it will manage recovery on its own
       local IS_APPLICATION_POD_LIVING=true
@@ -263,7 +263,7 @@ function removeRecoveryMarker() {
 # parameters:
 # - place where pod data directories are saved (podsDir)
 function recoveryPodsGarbageCollection() {
-  local livingPods=($($(dirname ${BASH_SOURCE[0]})/query.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
+  local livingPods=($($(dirname ${BASH_SOURCE[0]})/queryosapi.py -q pods_living -f list_space ${DEBUG_QUERY_API_PARAM}))
   if [ $? -ne 0 ]; then # fail to connect to openshift api
     echo "ERROR: Can't get list of living pods. Can't do recovery marker garbage collection."
     return 1
@@ -298,7 +298,7 @@ function getPodLogTimestamp() {
   init_pod_name
   local podNameToProbe=${1:-$POD_NAME}
 
-  local logOutput=$($(dirname ${BASH_SOURCE[0]})/query.py -q log --pod ${podNameToProbe} --tailline 1)
+  local logOutput=$($(dirname ${BASH_SOURCE[0]})/queryosapi.py -q log --pod ${podNameToProbe} --tailline 1)
   # only one, last line of the log, is returned, taking the start which is timestamp
   echo $logOutput | sed 's/ .*$//'
 }
@@ -313,7 +313,7 @@ function probePodLogForRecoveryErrors() {
   [ "x$sinceTimestamp" != "x" ] && sinceTimestampParam="--sincetime ${sinceTimestamp}"
   local podNameToProbe=${2:-$POD_NAME}
 
-  local logOutput=$($(dirname ${BASH_SOURCE[0]})/query.py -q log --pod ${podNameToProbe} ${sinceTimestampParam})
+  local logOutput=$($(dirname ${BASH_SOURCE[0]})/queryosapi.py -q log --pod ${podNameToProbe} ${sinceTimestampParam})
   local probeStatus=$?
 
   if [ $probeStatus -ne 0 ]; then
